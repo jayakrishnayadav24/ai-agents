@@ -389,6 +389,8 @@ python3 main.py "Create ECS cluster staging with 3 nginx replicas on port 80"
 
 <img width="1918" height="947" alt="image" src="https://github.com/user-attachments/assets/1bb57f11-810c-413f-9a67-4c8c80ce2254" />
 
+<img width="1573" height="823" alt="image" src="https://github.com/user-attachments/assets/bf22adee-d3b3-4304-b834-a5942e2dda6c" />
+
 
 ### ECS — Troubleshoot
 ```bash

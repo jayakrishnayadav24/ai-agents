@@ -352,6 +352,9 @@ python3 main.py "Start EC2 instance i-0abc123def456"
 python3 main.py "Stop EC2 instance i-0abc123def456"
 ```
 
+<img width="1918" height="940" alt="image" src="https://github.com/user-attachments/assets/c46994a1-6c96-4663-aa1a-08378eb96d4a" />
+
+
 ### EC2 — Troubleshoot
 ```bash
 python3 main.py "Diagnose EC2 instance i-0abc123def456"

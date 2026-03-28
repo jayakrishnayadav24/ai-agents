@@ -360,9 +360,18 @@ python3 main.py "Stop EC2 instance i-0abc123def456"
 python3 main.py "Diagnose EC2 instance i-0abc123def456"
 python3 main.py "My EC2 instance i-0abc123 is unreachable, diagnose it"
 python3 main.py "Show me all rules for security group sg-0abc123"
+<img width="1918" height="880" alt="image" src="https://github.com/user-attachments/assets/cbed1618-cbee-44c4-8a07-066c4ca6a0ab" />
+
 python3 main.py "Open port 443 on security group sg-0abc123"
+<img width="1918" height="921" alt="image" src="https://github.com/user-attachments/assets/ddd70a70-fc25-4a15-9717-86f76abffef2" />
+
 python3 main.py "List all my running EC2 instances"
+<img width="1912" height="937" alt="image" src="https://github.com/user-attachments/assets/e83863b5-5d82-442d-935a-3fa6ee42e979" />
+
 ```
+
+
+
 
 ### VPC — Troubleshoot
 ```bash

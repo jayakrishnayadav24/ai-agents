@@ -8,6 +8,7 @@ A true agentic AI system that takes natural language prompts and autonomously ma
 
 The idea behind this project came from a real frustration — managing AWS infrastructure requires jumping between EC2, ECS, EKS, and IAM consoles, running multiple CLI commands, and knowing the exact sequence of steps. For example, to create an ECS Fargate service you need to:
 
+
 1. Check if the IAM execution role exists
 2. Create it if missing
 3. Create the ECS cluster
@@ -469,6 +470,14 @@ python3 main.py "Create an EKS cluster named dev-cluster with 2 t3.medium nodes"
 python3 main.py "Create EKS cluster prod-cluster with 3 t3.large nodes"
 python3 main.py "Add a nodegroup named gpu-nodes in EKS cluster dev-cluster with 2 g4dn.xlarge instances"
 ```
+<img width="1918" height="1017" alt="image" src="https://github.com/user-attachments/assets/62de8315-2d1e-47aa-bece-bae0ccc0e3ee" />
+
+
+
+<img width="1918" height="895" alt="image" src="https://github.com/user-attachments/assets/f7867764-01d4-410e-b214-f7b72780ad15" />
+
+
+<img width="1907" height="666" alt="image" src="https://github.com/user-attachments/assets/0ba36265-7b3f-458d-b454-60bfd617f374" />
 
 ### EKS — Troubleshoot
 ```bash

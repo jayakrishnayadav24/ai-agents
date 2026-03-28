@@ -502,6 +502,9 @@ python3 main.py "Delete all EKS clusters"
 ```
 
 ### Docker — Containers
+
+<img width="1903" height="883" alt="image" src="https://github.com/user-attachments/assets/379a0406-17cf-400a-beed-ed033796fa22" />
+
 ```bash
 # Run containers
 python3 main.py "Run nginx on port 8080"

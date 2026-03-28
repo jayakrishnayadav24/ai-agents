@@ -288,7 +288,7 @@ aws_secret_access_key = <bedrock-account-secret>
 
 ### 3. Set environment variables
 ```bash
-export AWS_PROFILE=kube8cloud     # profile for creating AWS resources
+export AWS_PROFILE=test    # profile for creating AWS resources
 export AWS_REGION=ap-south-1      # region for AWS resources
 export BEDROCK_PROFILE=own        # profile that has Bedrock access
 export BEDROCK_REGION=ap-south-1  # region where Bedrock is available

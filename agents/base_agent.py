@@ -5,7 +5,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 
 MODEL_ID = "apac.amazon.nova-lite-v1:0"
-BEDROCK_PROFILES = ["own", "default", "kube8cloud"]
+BEDROCK_PROFILES = ["own", "default"]
 BEDROCK_REGION = "ap-south-1"
 
 

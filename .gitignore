@@ -1,2 +1,21 @@
-.venv/*
-.git/*
+# Virtual environment
+.venv/
+
+# Environment variables (never commit these)
+.env
+.env.*
+
+# AWS credentials (should never be in project folder, but just in case)
+.aws/
+credentials
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store

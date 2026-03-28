@@ -8,10 +8,15 @@ ECS_TASK_EXECUTION_POLICY = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskE
 class ECSAgent(BaseAgent):
     AGENT_KEY = "ecs"
     SYSTEM_PROMPT = """You are an ECS specialist agent. You manage ECS clusters, services, and task definitions.
-- Always call ecs__list_subnets (via ec2 context) or ask orchestrator for subnet IDs before creating services.
+RULES:
+- NEVER ask the user for subnet IDs, VPC IDs, or security group IDs. Always discover them yourself.
+- Before creating a service, ALWAYS call ecs__list_subnets to get real subnet IDs.
+- Before creating a service, ALWAYS call ecs__list_security_groups to get the default security group ID.
+- Use the first 2 subnet IDs from ecs__list_subnets and the default security group ID from ecs__list_security_groups.
 - For DELETE: call ecs__list_services first, delete each service, then delete the cluster.
 - For DIAGNOSE: use ecs__diagnose_service and ecs__fix_stopped_tasks.
-- Auto-create IAM execution roles when needed."""
+- Auto-create IAM execution roles when needed.
+- Never stop and ask for input. Always proceed autonomously."""
 
     CAPABILITIES = [
         {
@@ -113,12 +118,57 @@ class ECSAgent(BaseAgent):
             "description": "Delete an ECS cluster",
             "input_schema": {"type": "object", "properties": {"cluster": {"type": "string"}}, "required": ["cluster"]},
         },
+        {
+            "name": "list_subnets",
+            "description": "List all subnets with IDs, VPC, AZ — use this to get subnet IDs before creating a service",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "list_security_groups",
+            "description": "List all security groups — use this to get the default security group ID before creating a service",
+            "input_schema": {"type": "object", "properties": {}},
+        },
     ]
 
     def __init__(self, region="us-east-1"):
         super().__init__("ECSAgent", region)
         self.ecs = self.session.client("ecs")
+        self.ec2 = self.session.client("ec2")
         self.iam_agent = IAMAgent(region)
+
+    def list_subnets(self) -> dict:
+        try:
+            subnets = [{"subnet_id": s["SubnetId"], "vpc_id": s["VpcId"], "az": s["AvailabilityZone"]}
+                       for s in self.ec2.describe_subnets()["Subnets"]]
+            return self.report("success", f"Found {len(subnets)} subnets", {"subnets": subnets})
+        except Exception as e:
+            return self.report("error", str(e))
+
+    def list_security_groups(self) -> dict:
+        try:
+            sgs = [{"group_id": sg["GroupId"], "name": sg["GroupName"], "vpc_id": sg.get("VpcId", "")}
+                   for sg in self.ec2.describe_security_groups()["SecurityGroups"]]
+            return self.report("success", f"Found {len(sgs)} security groups", {"security_groups": sgs})
+        except Exception as e:
+            return self.report("error", str(e))
+
+    def _get_default_subnets(self) -> list:
+        """Auto-fetch first 2 subnet IDs."""
+        try:
+            subnets = self.ec2.describe_subnets()["Subnets"]
+            return [s["SubnetId"] for s in subnets[:2]]
+        except Exception:
+            return []
+
+    def _get_default_sg(self) -> list:
+        """Auto-fetch the default security group ID."""
+        try:
+            sgs = self.ec2.describe_security_groups(
+                Filters=[{"Name": "group-name", "Values": ["default"]}]
+            )["SecurityGroups"]
+            return [sgs[0]["GroupId"]] if sgs else []
+        except Exception:
+            return []
 
     def execute(self, task: dict) -> dict:
         action = task.get("action")
@@ -134,6 +184,8 @@ class ECSAgent(BaseAgent):
         elif action == "list_running_tasks": return self.list_running_tasks(task["cluster"])
         elif action == "delete_service":    return self.delete_service(task["cluster"], task["service"])
         elif action == "delete_cluster":    return self.delete_cluster(task["cluster"])
+        elif action == "list_subnets":      return self.list_subnets()
+        elif action == "list_security_groups": return self.list_security_groups()
         return self.report("error", f"Unknown ECS action: {action}")
 
     def _ensure_execution_role(self) -> str:
@@ -198,8 +250,11 @@ class ECSAgent(BaseAgent):
 
     def create_service(self, task: dict) -> dict:
         self._ensure_service_linked_role()
-        if "subnets" not in task:
-            return self.report("error", "'subnets' is required. Call ec2__list_subnets first.")
+        # Auto-discover subnets and security groups if not provided
+        subnets = task.get("subnets") or self._get_default_subnets()
+        security_groups = task.get("security_groups") or self._get_default_sg()
+        if not subnets:
+            return self.report("error", "No subnets found in this account/region.")
         try:
             resp = self.ecs.create_service(
                 cluster=task["cluster"],
@@ -209,8 +264,8 @@ class ECSAgent(BaseAgent):
                 launchType=task.get("launch_type", "FARGATE"),
                 networkConfiguration={
                     "awsvpcConfiguration": {
-                        "subnets": task["subnets"],
-                        "securityGroups": task.get("security_groups", []),
+                        "subnets": subnets,
+                        "securityGroups": security_groups,
                         "assignPublicIp": task.get("assign_public_ip", "ENABLED"),
                     }
                 },
@@ -297,6 +352,10 @@ class ECSAgent(BaseAgent):
 
     def delete_cluster(self, cluster: str) -> dict:
         try:
+            # Stop all running tasks first
+            task_arns = self.ecs.list_tasks(cluster=cluster, desiredStatus="RUNNING").get("taskArns", [])
+            for arn in task_arns:
+                self.ecs.stop_task(cluster=cluster, task=arn, reason="Cluster deletion")
             self.ecs.delete_cluster(cluster=cluster)
             return self.report("deleted", f"Cluster '{cluster}' deleted")
         except Exception as e:

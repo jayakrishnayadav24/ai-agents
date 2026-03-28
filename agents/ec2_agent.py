@@ -5,16 +5,18 @@ class EC2Agent(BaseAgent):
     AGENT_KEY = "ec2"
     SYSTEM_PROMPT = """You are an EC2 specialist agent. You manage EC2 instances, VPCs, subnets, and security groups.
 - Always use real IDs — call ec2__list_subnets or ec2__list_security_groups to discover them if not provided.
-- For CREATE: never ask the user for details. Act autonomously with these defaults if not specified:
+- For CREATE instance: never ask the user for details. Act autonomously with these defaults if not specified:
   * ami_id: ami-0f58b397bc5c1f2e8 (Amazon Linux 2, ap-south-1)
   * instance_type: t2.micro
   * name: auto-created
-  * subnet_id: pick the first subnet from ec2__list_subnets
-  * security_group_ids: pick the group named 'default' from ec2__list_security_groups
+  * Call ec2__list_subnets first, pick the first subnet_id from results
+  * Call ec2__list_security_groups first, pick the group_id (NOT name) of 'default' group
   * key_name: omit entirely if not provided
+- ALWAYS pass security_group_ids as group IDs (sg-xxxxxxxx), never as names like 'default'.
 - Just do it — never ask for confirmation or missing details. Proceed autonomously.
 - For DIAGNOSE: use ec2__diagnose_instance and ec2__diagnose_vpc.
-- For DELETE: only use stop/terminate tools, never create tools."""
+- For DELETE: only use stop/terminate tools, never create tools.
+- For ECS/EKS networking info: use ec2__list_subnets and ec2__list_security_groups and return the IDs."""
 
     CAPABILITIES = [
         {
@@ -111,16 +113,32 @@ class EC2Agent(BaseAgent):
 
     def create_instance(self, task: dict) -> dict:
         try:
+            # Resolve any SG names to IDs (e.g. 'default' → 'sg-xxxx')
+            raw_sgs = task.get("security_group_ids", [])
+            sg_ids = []
+            for sg in raw_sgs:
+                if sg.startswith("sg-"):
+                    sg_ids.append(sg)
+                else:
+                    # Resolve name to ID
+                    resp = self.ec2.describe_security_groups(Filters=[{"Name": "group-name", "Values": [sg]}])
+                    found = resp.get("SecurityGroups", [])
+                    if found:
+                        sg_ids.append(found[0]["GroupId"])
+
             kwargs = {
                 "ImageId": task["ami_id"],
                 "InstanceType": task.get("instance_type", "t2.micro"),
                 "MinCount": 1, "MaxCount": 1,
-                "SecurityGroupIds": task.get("security_group_ids", []),
-                "SubnetId": task.get("subnet_id"),
                 "TagSpecifications": [{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": task.get("name", "auto-created")}]}],
             }
-            if task.get("key_name"):  # only add KeyName if explicitly provided and non-empty
+            if sg_ids:
+                kwargs["SecurityGroupIds"] = sg_ids
+            if task.get("subnet_id"):
+                kwargs["SubnetId"] = task["subnet_id"]
+            if task.get("key_name"):
                 kwargs["KeyName"] = task["key_name"]
+
             resp = self.ec2.run_instances(**kwargs)
             iid = resp["Instances"][0]["InstanceId"]
             return self.report("created", f"EC2 instance created: {iid}", {"instance_id": iid})

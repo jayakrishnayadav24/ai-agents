@@ -118,9 +118,11 @@ No hardcoded steps. Each agent reasons independently.
 ```
 aws-multi-agent/
 ├── main.py                  # Orchestrator — delegates to specialist agents
-├── requirements.txt         # boto3, botocore
+├── app.py                   # Streamlit UI — chat interface with session switcher
+├── requirements.txt         # boto3, botocore, streamlit
 └── agents/
-    ├── base_agent.py        # BaseAgent — shared LLM loop, tool dispatch
+    ├── base_agent.py        # BaseAgent — shared LLM loop, tool dispatch, streaming
+    ├── memory.py            # DynamoDB memory — session history, display messages
     ├── iam_agent.py         # IAM specialist — users, groups, roles, policies
     ├── ec2_agent.py         # EC2 specialist — instances, VPC, SGs
     ├── ecs_agent.py         # ECS specialist — clusters, services, tasks
@@ -131,6 +133,44 @@ aws-multi-agent/
 ---
 
 ## Code Explanation
+
+### `memory.py` — Persistent Session Memory
+
+All conversation history is stored in DynamoDB. Two types of records are saved:
+
+- **Raw Bedrock messages** — full tool call/result chains, used to give agents context across runs
+- **Display messages** — clean text-only records (user prompts + final AI answers), used to render the UI sidebar
+
+```python
+save_message(session_id, message)      # saves raw Bedrock message
+save_display(session_id, role, text)   # saves clean text for UI
+load_history(session_id)               # loads text-only history for Bedrock context
+load_display_history(session_id)       # loads display messages for sidebar
+list_sessions()                        # lists all sessions with first message as title
+```
+
+The DynamoDB table `agent-memory` is auto-created on first run with `PAY_PER_REQUEST` billing — no provisioning needed.
+
+```
+DynamoDB Table: agent-memory
+  partition key: session_id  (String)
+  sort key:      ts          (String — ISO timestamp)
+  attributes:    role, content, display (optional flag)
+```
+
+### `app.py` — Streamlit UI
+
+A chat interface that runs in the browser. Key features:
+
+- **Session switcher** — sidebar lists all past chat sessions, click any to switch
+- **➕ New Chat** — creates a fresh session with a random ID
+- **Live agent activity** — expandable status box shows which agent is working, every tool call, and each result in real time
+- **Persistent history** — chat history is loaded from DynamoDB on session switch, so conversations survive page refreshes
+
+```bash
+streamlit run app.py
+# Opens at http://localhost:8501
+```
 
 ### `base_agent.py` — The Brain of Every Agent
 
@@ -144,7 +184,8 @@ class BaseAgent:
 ```
 
 Key methods:
-- `run(task_description)` — the **agentic loop**: sends task to Bedrock, gets tool calls back, executes them, feeds results back, repeats until done
+- `run(task_description, session_id)` — the **agentic loop**: sends task to Bedrock, gets tool calls back, executes them, feeds results back, repeats until done. Loads memory from DynamoDB if `session_id` is provided
+- `run_streaming(task_description, session_id)` — same loop but **yields events** (`tool_call`, `tool_result`, `done`) for real-time UI updates
 - `execute(task)` — direct API/CLI call, no LLM involved
 - `get_tools()` — converts CAPABILITIES into Bedrock tool specs
 - `_get_dispatcher()` — maps tool names to callable functions
@@ -163,6 +204,10 @@ AGENT_REGISTRY = {
     "docker": DockerAgent,
 }
 ```
+
+Two entry points:
+- `run_orchestrator(prompt, region, session_id)` — blocking, returns all results, used by CLI
+- `run_orchestrator_streaming(prompt, region, session_id)` — generator, yields events for the UI
 
 Adding a new agent = create the file + add one line here.
 
@@ -310,14 +355,25 @@ docker ps          # verify Docker daemon is running
 
 ## Running
 
+### CLI
 ```bash
 python3 main.py "your natural language request here"
+
+# With a named session (agents remember previous context)
+python3 main.py --session myproject "Create ECS cluster prod with nginx"
+python3 main.py --session myproject "What did I just create?"
 ```
 
 Interactive mode:
 ```bash
 python3 main.py
 # Enter your AWS request: <type here>
+```
+
+### UI
+```bash
+streamlit run app.py
+# Opens at http://localhost:8501
 ```
 
 ---
@@ -524,10 +580,19 @@ python3 main.py "Create ECS cluster prod with nginx on port 80"
 python3 main.py "Run mongo 4, redis 4, mysql 8.4 with volumes on same network"
 ```
 
-### 2. Each Agent is a True Specialist
+### 2. Persistent Memory Across Sessions
+Every conversation is stored in DynamoDB. Agents remember what was created in previous runs within the same session:
+```bash
+python3 main.py --session prod "Create ECS cluster prod with nginx on port 80"
+# later...
+python3 main.py --session prod "Diagnose the cluster I created earlier"
+# → Agent remembers the cluster name from the previous run
+```
+
+### 3. Each Agent is a True Specialist
 Every agent has its own LLM call, its own system prompt, its own tools, and its own reasoning loop. The Docker agent knows Docker deeply. The EKS agent knows EKS deeply. They don't interfere with each other.
 
-### 3. Autonomous Error Recovery
+### 4. Autonomous Error Recovery
 When something fails, agents don't crash — they reason about the error and try a different approach:
 - Subnet not found → agent calls `ec2__list_subnets` to find real ones
 - IAM role missing → agent creates it automatically before proceeding
@@ -535,22 +600,22 @@ When something fails, agents don't crash — they reason about the error and try
 - Docker container name conflict → agent removes old container and recreates
 - MySQL missing password → agent adds `MYSQL_ROOT_PASSWORD` automatically
 
-### 4. Zero Hardcoded Flows
+### 5. Zero Hardcoded Flows
 There is no `if action == "create_ecs" then do step1, step2, step3`. The AI decides the sequence based on results.
 
-### 5. Covers Both Cloud and Local
+### 6. Covers Both Cloud and Local
 Unlike other tools that only manage cloud resources, this system also manages your local Docker environment — containers, images, volumes, networks, and compose stacks.
 
-### 6. Multi-Account Support
+### 7. Multi-Account Support
 Bedrock (AI inference) runs on one AWS account while resource creation happens on another. The system auto-detects which profile works and falls back gracefully.
 
-### 7. Easily Extensible
+### 8. Easily Extensible
 Adding a new AWS service or local tool takes 3 steps:
 1. Create `agents/your_agent.py` with `CAPABILITIES` list
 2. Add one line to `AGENT_REGISTRY` in `main.py`
 3. Done — the tool is automatically exposed to the orchestrator
 
-### 8. Real Actions
+### 9. Real Actions
 This is not a simulation. Every action creates/modifies/deletes real AWS resources and real Docker containers on your machine.
 
 ---
@@ -565,35 +630,25 @@ The system currently uses `apac.amazon.nova-lite-v1:0` which is a small, free mo
 
 **Fix:** Use Claude 3.5 Sonnet when Anthropic billing is resolved. Smarter model = fewer loops, better reasoning.
 
-### 2. No Persistent Memory
-Each run starts fresh. The agents don't remember previous conversations.
+### 2. No Safety Layer (This is Serious)
+If you say "delete all EKS clusters" or "remove all containers", it will do it without asking "are you sure?".
 
-**Fix:** Add DynamoDB or a local JSON file to store session history.
+**Fix:** Add a `--dry-run` flag or a confirmation prompt for delete operations.
 
 ### 3. Sequential Agent Execution
 Agents run one at a time. If the orchestrator needs both EC2 and ECS agents, it calls them sequentially.
 
 **Fix:** Use Python `threading` or `asyncio` to run multiple agents simultaneously.
 
-### 4. No Confirmation Before Destructive Actions
-If you say "delete all EKS clusters" or "remove all containers", it will do it without asking "are you sure?".
-
-**Fix:** Add a `--dry-run` flag or a confirmation prompt for delete operations.
-
-### 5. Bedrock Payment Dependency
+### 4. Bedrock Payment Dependency
 The system depends on AWS Bedrock which requires a valid payment instrument. Free-tier Anthropic models hit payment walls intermittently.
 
 **Fix:** Ensure billing is set up on the Bedrock account, or use a local model via Ollama as fallback.
 
-### 6. No Real-Time Streaming
-Results are shown only after the entire agent loop completes. For long operations like EKS cluster creation (10-15 min), you see nothing until it's done.
-
-**Fix:** Add streaming output or periodic status updates.
-
-### 7. Docker Agent Requires Local Docker
+### 5. Docker Agent Requires Local Docker
 The Docker agent runs `docker` CLI commands on your local machine. It won't work if Docker is not installed or the daemon is not running.
 
-### 8. Context Window Limits
+### 6. Context Window Limits
 For large accounts with hundreds of security groups or subnets, the tool results can exceed the model's context window.
 
 **Fix:** Truncate large list results before feeding back to the model.
@@ -695,6 +750,7 @@ That's it. The S3 agent is now a full specialist with its own LLM reasoning.
 | `AWS_REGION` | `ap-south-1` | Region where resources are created |
 | `BEDROCK_PROFILE` | `own` | AWS profile that has Bedrock access |
 | `BEDROCK_REGION` | `ap-south-1` | Region where Bedrock is available |
+| `MEMORY_TABLE` | `agent-memory` | DynamoDB table name for session memory |
 
 ---
 
@@ -712,3 +768,6 @@ That's it. The S3 agent is now a full specialist with its own LLM reasoning.
 | `docker: command not found` | Install Docker on your machine and ensure the daemon is running |
 | MySQL container exits immediately | Agent now auto-adds `MYSQL_ROOT_PASSWORD` — if it still fails, check Docker logs |
 | `Cannot connect to Docker daemon` | Run `sudo systemctl start docker` or start Docker Desktop |
+| DynamoDB `ResourceNotFoundException` | Table not yet created — run any command once and it auto-creates |
+| DynamoDB `ValidationException: toolResult blocks` | Memory replay bug — fixed by filtering tool blocks in `load_history()` |
+| Streamlit shows `Done.` with no detail | No `summary` event from orchestrator — falls back to `agent_done` lines automatically |

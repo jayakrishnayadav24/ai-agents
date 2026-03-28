@@ -1,8 +1,12 @@
 import json
 import boto3
 import logging
+from agents.memory import load_history, save_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
+logging.getLogger("botocore.credentials").setLevel(logging.WARNING)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("boto3").setLevel(logging.WARNING)
 
 MODEL_ID = "apac.amazon.nova-lite-v1:0"
 BEDROCK_PROFILES = ["own", "default"]
@@ -74,7 +78,7 @@ class BaseAgent:
         """Direct execution — bypasses LLM, calls AWS API directly."""
         raise NotImplementedError
 
-    def run(self, task_description: str) -> dict:
+    def run(self, task_description: str, session_id: str = None) -> dict:
         """
         True agentic run — this agent uses its own LLM to reason about
         the task and decide which tools to call.
@@ -82,7 +86,14 @@ class BaseAgent:
         self.logger.info(f"Agent received task: {task_description}")
         tools = self.get_tools()
         dispatcher = self._get_dispatcher()
-        messages = [{"role": "user", "content": [{"text": task_description}]}]
+
+        # Load memory if session_id provided
+        history = load_history(session_id) if session_id else []
+        new_msg = {"role": "user", "content": [{"text": task_description}]}
+        messages = history + [new_msg]
+        if session_id:
+            save_message(session_id, new_msg)
+
         all_results = []
         max_iterations = 10
 
@@ -102,10 +113,15 @@ class BaseAgent:
                     (b["text"] for b in output_message.get("content", []) if "text" in b), ""
                 )
                 self.logger.info(f"Task complete: {summary}")
+                if session_id:
+                    save_message(session_id, output_message)
                 return self.report("success", summary, {"results": all_results})
 
             if stop_reason != "tool_use":
                 break
+
+            if session_id:
+                save_message(session_id, output_message)
 
             tool_results = []
             for block in output_message.get("content", []):
@@ -129,6 +145,84 @@ class BaseAgent:
                     }
                 })
 
-            messages.append({"role": "user", "content": tool_results})
+            tool_result_msg = {"role": "user", "content": tool_results}
+            messages.append(tool_result_msg)
+            if session_id:
+                save_message(session_id, tool_result_msg)
 
         return self.report("completed", f"Agent {self.name} finished", {"results": all_results})
+
+    def run_streaming(self, task_description: str, session_id: str = None):
+        """
+        Same as run() but yields events for UI streaming:
+          {kind: tool_call,   tool, inputs}
+          {kind: tool_result, status, message}
+          {kind: done,        result}
+        """
+        tools = self.get_tools()
+        dispatcher = self._get_dispatcher()
+        history = load_history(session_id) if session_id else []
+        new_msg = {"role": "user", "content": [{"text": task_description}]}
+        messages = history + [new_msg]
+        if session_id:
+            save_message(session_id, new_msg)
+
+        all_results = []
+        for _ in range(10):
+            response = self.bedrock.converse(
+                modelId=MODEL_ID,
+                system=[{"text": self.SYSTEM_PROMPT}],
+                messages=messages,
+                toolConfig={"tools": tools},
+            )
+            output_message = response["output"]["message"]
+            messages.append(output_message)
+            stop_reason = response["stopReason"]
+
+            if stop_reason == "end_turn":
+                summary = next(
+                    (b["text"] for b in output_message.get("content", []) if "text" in b), ""
+                )
+                if session_id:
+                    save_message(session_id, output_message)
+                result = self.report("success", summary, {"results": all_results})
+                yield {"kind": "done", "result": result}
+                return
+
+            if stop_reason != "tool_use":
+                break
+
+            if session_id:
+                save_message(session_id, output_message)
+
+            tool_results = []
+            for block in output_message.get("content", []):
+                if block.get("type") != "toolUse" and "toolUse" not in block:
+                    continue
+                tool_block = block.get("toolUse") or block
+                tool_name  = tool_block["name"]
+                tool_use_id = tool_block["toolUseId"]
+                inputs = tool_block["input"]
+
+                yield {"kind": "tool_call", "tool": tool_name, "inputs": inputs}
+
+                handler = dispatcher.get(tool_name)
+                result  = handler(inputs) if handler else {"status": "error", "message": f"Unknown tool: {tool_name}"}
+                all_results.append(result)
+
+                yield {"kind": "tool_result", "status": result["status"], "message": result["message"]}
+
+                tool_results.append({
+                    "toolResult": {
+                        "toolUseId": tool_use_id,
+                        "content": [{"text": json.dumps(result, default=str)}],
+                    }
+                })
+
+            tool_result_msg = {"role": "user", "content": tool_results}
+            messages.append(tool_result_msg)
+            if session_id:
+                save_message(session_id, tool_result_msg)
+
+        result = self.report("completed", f"Agent {self.name} finished", {"results": all_results})
+        yield {"kind": "done", "result": result}

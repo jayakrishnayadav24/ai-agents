@@ -575,6 +575,9 @@ python3 main.py "Delete all EKS clusters"
 python3 main.py "Stop and remove all docker containers and prune images"
 ```
 
+<img width="1905" height="709" alt="image" src="https://github.com/user-attachments/assets/e6d783d4-744e-4b08-9676-b8de52d01dc6" />
+
+
 ---
 
 ## Pros of This System

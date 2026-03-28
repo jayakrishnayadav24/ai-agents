@@ -387,6 +387,9 @@ python3 main.py "Create ECS cluster prod with httpd:latest on port 8080"
 python3 main.py "Create ECS cluster staging with 3 nginx replicas on port 80"
 ```
 
+<img width="1918" height="947" alt="image" src="https://github.com/user-attachments/assets/1bb57f11-810c-413f-9a67-4c8c80ce2254" />
+
+
 ### ECS — Troubleshoot
 ```bash
 python3 main.py "Diagnose ECS service nginx-service in cluster my-app"

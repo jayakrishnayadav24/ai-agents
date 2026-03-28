@@ -15,10 +15,17 @@ EKS_WORKER_POLICIES = [
 class EKSAgent(BaseAgent):
     AGENT_KEY = "eks"
     SYSTEM_PROMPT = """You are an EKS specialist agent. You manage EKS clusters and nodegroups.
-- Always call eks__list_supported_versions first before creating a cluster, use the latest version.
+- CRITICAL: NEVER ask the user for any information. Always discover everything autonomously.
+- NEVER ask for subnet IDs — call eks__list_subnets to get them, then pass the first 3 subnet IDs to create_cluster.
+- NEVER ask for security group IDs — call eks__list_security_groups to get the default one.
+- NEVER ask for k8s version — call eks__list_supported_versions first and use the latest.
+- Always call eks__list_supported_versions THEN eks__list_subnets THEN eks__list_security_groups BEFORE calling eks__create_cluster.
 - After creating a cluster, call eks__wait_for_cluster before creating nodegroups.
-- For DELETE: call eks__list_nodegroups, delete each nodegroup (wait for deletion), then delete the cluster. Never call create or wait tools during delete.
-- For DIAGNOSE: use eks__diagnose_cluster and eks__describe_nodegroup."""
+- For DELETE: call eks__list_nodegroups, delete each nodegroup (wait for deletion), then delete the cluster.
+- For DIAGNOSE: use eks__diagnose_cluster and eks__describe_nodegroup.
+- If the user does not specify a cluster name, use 'my-eks-cluster'.
+- If the user does not specify node count or instance type, use 2 nodes of t3.medium.
+- NEVER stop and ask for input. Always proceed autonomously using your tools."""
 
     CAPABILITIES = [
         {
@@ -37,7 +44,7 @@ class EKSAgent(BaseAgent):
                     "subnets": {"type": "array", "items": {"type": "string"}},
                     "security_groups": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["cluster_name", "subnets"],
+                "required": ["cluster_name"],
             },
         },
         {
@@ -69,7 +76,7 @@ class EKSAgent(BaseAgent):
                     "desired_size": {"type": "integer"},
                     "subnets": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["cluster_name", "subnets"],
+                "required": ["cluster_name"],
             },
         },
         {
@@ -127,12 +134,54 @@ class EKSAgent(BaseAgent):
                 "required": ["cluster_name"],
             },
         },
+        {
+            "name": "list_subnets",
+            "description": "List all subnets — use this to get subnet IDs before creating a cluster or nodegroup",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "list_security_groups",
+            "description": "List all security groups — use this to get the default security group ID before creating a cluster",
+            "input_schema": {"type": "object", "properties": {}},
+        },
     ]
 
     def __init__(self, region="us-east-1"):
         super().__init__("EKSAgent", region)
         self.eks = self.session.client("eks")
+        self.ec2 = self.session.client("ec2")
         self.iam_agent = IAMAgent(region)
+
+    def list_subnets(self) -> dict:
+        try:
+            subnets = [{"subnet_id": s["SubnetId"], "vpc_id": s["VpcId"], "az": s["AvailabilityZone"]}
+                       for s in self.ec2.describe_subnets()["Subnets"]]
+            return self.report("success", f"Found {len(subnets)} subnets", {"subnets": subnets})
+        except Exception as e:
+            return self.report("error", str(e))
+
+    def list_security_groups(self) -> dict:
+        try:
+            sgs = [{"group_id": sg["GroupId"], "name": sg["GroupName"]}
+                   for sg in self.ec2.describe_security_groups()["SecurityGroups"]]
+            return self.report("success", f"Found {len(sgs)} security groups", {"security_groups": sgs})
+        except Exception as e:
+            return self.report("error", str(e))
+
+    def _get_default_subnets(self) -> list:
+        try:
+            return [s["SubnetId"] for s in self.ec2.describe_subnets()["Subnets"][:3]]
+        except Exception:
+            return []
+
+    def _get_default_sg(self) -> list:
+        try:
+            sgs = self.ec2.describe_security_groups(
+                Filters=[{"Name": "group-name", "Values": ["default"]}]
+            )["SecurityGroups"]
+            return [sgs[0]["GroupId"]] if sgs else []
+        except Exception:
+            return []
 
     def execute(self, task: dict) -> dict:
         action = task.get("action")
@@ -148,6 +197,8 @@ class EKSAgent(BaseAgent):
         elif action == "list_supported_versions": return self.list_supported_versions()
         elif action == "delete_nodegroup":      return self.delete_nodegroup(task["cluster_name"], task["nodegroup_name"])
         elif action == "delete_cluster":        return self.delete_cluster(task["cluster_name"])
+        elif action == "list_subnets":          return self.list_subnets()
+        elif action == "list_security_groups":  return self.list_security_groups()
         return self.report("error", f"Unknown EKS action: {action}")
 
     def _ensure_cluster_role(self) -> str:
@@ -171,14 +222,18 @@ class EKSAgent(BaseAgent):
 
     def create_cluster(self, task: dict) -> dict:
         role_arn = self._ensure_cluster_role()
+        subnets = task.get("subnets") or self._get_default_subnets()
+        security_groups = task.get("security_groups") or self._get_default_sg()
+        if not subnets:
+            return self.report("error", "No subnets found in this account/region.")
         try:
             resp = self.eks.create_cluster(
                 name=task["cluster_name"],
                 version=task.get("k8s_version", "1.32"),
                 roleArn=role_arn,
                 resourcesVpcConfig={
-                    "subnetIds": task["subnets"],
-                    "securityGroupIds": task.get("security_groups", []),
+                    "subnetIds": subnets,
+                    "securityGroupIds": security_groups,
                     "endpointPublicAccess": True,
                 },
             )
@@ -251,16 +306,19 @@ class EKSAgent(BaseAgent):
 
     def create_nodegroup(self, task: dict) -> dict:
         node_role_arn = self._ensure_node_role()
+        subnets = task.get("subnets") or self._get_default_subnets()
+        if not subnets:
+            return self.report("error", "No subnets found in this account/region.")
         try:
             resp = self.eks.create_nodegroup(
                 clusterName=task["cluster_name"],
                 nodegroupName=task.get("nodegroup_name", "default-ng"),
                 scalingConfig={"minSize": task.get("min_size", 1), "maxSize": task.get("max_size", 3), "desiredSize": task.get("desired_size", 2)},
-                subnets=task["subnets"],
+                subnets=subnets,
                 instanceTypes=[task.get("instance_type", "t3.medium")],
                 nodeRole=node_role_arn,
             )
-            return self.report("creating", f"Node group '{task.get('nodegroup_name')}' creation initiated", {"nodegroup_arn": resp["nodegroup"]["nodegroupArn"]})
+            return self.report("creating", f"Node group '{task.get('nodegroup_name', 'default-ng')}' creation initiated", {"nodegroup_arn": resp["nodegroup"]["nodegroupArn"]})
         except self.eks.exceptions.ResourceInUseException:
             return self.report("exists", f"Nodegroup '{task.get('nodegroup_name')}' already exists")
         except Exception as e:

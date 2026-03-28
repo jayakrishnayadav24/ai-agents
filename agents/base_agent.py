@@ -109,6 +109,13 @@ class BaseAgent:
             stop_reason = response["stopReason"]
 
             if stop_reason == "end_turn":
+                # If no tools were called yet and model is asking a question, push it back
+                if not all_results:
+                    text = next((b["text"] for b in output_message.get("content", []) if "text" in b), "")
+                    if text and iteration < max_iterations - 1:
+                        self.logger.warning(f"Model asked a question instead of calling tools. Redirecting.")
+                        messages.append({"role": "user", "content": [{"text": "Do NOT ask for any information. Use your tools to discover everything autonomously and proceed."}]})
+                        continue
                 summary = next(
                     (b["text"] for b in output_message.get("content", []) if "text" in b), ""
                 )
@@ -180,6 +187,13 @@ class BaseAgent:
             stop_reason = response["stopReason"]
 
             if stop_reason == "end_turn":
+                # If no tools were called yet and model is asking a question, push it back
+                if not all_results:
+                    text = next((b["text"] for b in output_message.get("content", []) if "text" in b), "")
+                    if text:
+                        self.logger.warning(f"Model asked a question instead of calling tools. Redirecting.")
+                        messages.append({"role": "user", "content": [{"text": "Do NOT ask for any information. Use your tools to discover everything autonomously and proceed."}]})
+                        continue
                 summary = next(
                     (b["text"] for b in output_message.get("content", []) if "text" in b), ""
                 )

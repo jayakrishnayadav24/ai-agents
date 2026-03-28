@@ -28,8 +28,8 @@ AGENT_REGISTRY = {
 ORCHESTRATOR_PROMPT = """You are an AWS DevOps orchestrator that delegates tasks to specialist agents.
 You have access to these specialist agents:
 - ec2_agent: handles EC2 instances, VPCs, subnets, security groups
-- ecs_agent: handles ECS clusters, services, task definitions
-- eks_agent: handles EKS clusters and nodegroups
+- ecs_agent: handles ECS (Elastic Container Service) clusters, Fargate services, task definitions. NOT for Kubernetes.
+- eks_agent: handles EKS (Elastic Kubernetes Service) clusters and nodegroups. Use this for anything Kubernetes-related.
 - iam_agent: handles IAM roles
 - docker_agent: handles local Docker containers, images, volumes, networks, docker-compose
 
@@ -68,7 +68,7 @@ ORCHESTRATOR_TOOLS = [
     {
         "toolSpec": {
             "name": "ecs_agent",
-            "description": "Delegate a task to the ECS specialist agent. Handles clusters, services, task definitions.",
+            "description": "Delegate a task to the ECS specialist agent. Handles ECS (Elastic Container Service) Fargate clusters, services, task definitions. NOT for Kubernetes or EKS.",
             "inputSchema": {
                 "json": {
                     "type": "object",
@@ -81,7 +81,7 @@ ORCHESTRATOR_TOOLS = [
     {
         "toolSpec": {
             "name": "eks_agent",
-            "description": "Delegate a task to the EKS specialist agent. Handles clusters and nodegroups.",
+            "description": "Delegate a task to the EKS specialist agent. Handles EKS (Elastic Kubernetes Service) clusters and nodegroups. Use for anything Kubernetes-related.",
             "inputSchema": {
                 "json": {
                     "type": "object",
@@ -123,10 +123,11 @@ ORCHESTRATOR_TOOLS = [
 def _force_delegate(prompt: str, agents: dict, session_id: str) -> list:
     """Fallback: when the LLM fails to call any tool, route based on keywords."""
     p = prompt.lower()
-    if any(k in p for k in ["ecs", "fargate", "cluster", "service", "task definition"]):
-        agent_key = "ecs"
-    elif any(k in p for k in ["eks", "kubernetes", "nodegroup", "k8s"]):
+    # Check EKS before ECS — more specific keywords first
+    if any(k in p for k in ["eks", "kubernetes", "nodegroup", "k8s"]):
         agent_key = "eks"
+    elif any(k in p for k in ["ecs", "fargate", "task definition"]):
+        agent_key = "ecs"
     elif any(k in p for k in ["ec2", "instance", "vpc", "subnet", "security group"]):
         agent_key = "ec2"
     elif any(k in p for k in ["iam", "role", "user", "policy", "permission"]):

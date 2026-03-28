@@ -152,6 +152,7 @@ def run_orchestrator(user_prompt: str, region: str = "us-east-1", session_id: st
     agents = {key: cls(region=region) for key, cls in AGENT_REGISTRY.items()}
 
     history = load_history(session_id)
+    history = history[-6:] if len(history) > 6 else history
     new_msg = {"role": "user", "content": [{"text": user_prompt}]}
     messages = history + [new_msg]
     save_message(session_id, new_msg)
@@ -252,6 +253,8 @@ def run_orchestrator_streaming(user_prompt: str, region: str = "us-east-1", sess
     agents  = {key: cls(region=region) for key, cls in AGENT_REGISTRY.items()}
 
     history = load_history(session_id)
+    # Keep only last 6 messages to avoid max_tokens on orchestrator
+    history = history[-6:] if len(history) > 6 else history
     new_msg = {"role": "user", "content": [{"text": user_prompt}]}
     messages = history + [new_msg]
     save_message(session_id, new_msg)
@@ -295,7 +298,12 @@ def run_orchestrator_streaming(user_prompt: str, region: str = "us-east-1", sess
         if stop_reason != "tool_use":
             logger.warning(f"Streaming orchestrator unexpected stop: {stop_reason}")
             if not all_agent_results and not called_agents:
-                forced = _force_delegate(user_prompt, agents, session_id)
+                if stop_reason == "max_tokens":
+                    # Context too large — retry with just the user prompt, no history
+                    logger.info("max_tokens hit — retrying without history")
+                    forced = _force_delegate(user_prompt, agents, session_id=None)
+                else:
+                    forced = _force_delegate(user_prompt, agents, session_id)
                 if forced:
                     all_agent_results.extend(forced)
             if all_agent_results:

@@ -356,8 +356,22 @@ docker ps          # verify Docker daemon is running
 
 ## Running
 
+### UI (recommended)
+```bash
+source .venv/bin/activate
+streamlit run app.py
+# Opens at http://localhost:8501
+```
+
+The UI gives you:
+- A chat interface in the browser
+- Live agent activity — see every tool call and result in real time
+- Session switcher in the sidebar — click any past chat to resume it
+- **➕ New Chat** button to start a fresh session
+
 ### CLI
 ```bash
+source .venv/bin/activate
 python3 main.py "your natural language request here"
 
 # With a named session (agents remember previous context)
@@ -369,12 +383,6 @@ Interactive mode:
 ```bash
 python3 main.py
 # Enter your AWS request: <type here>
-```
-
-### UI
-```bash
-streamlit run app.py
-# Opens at http://localhost:8501
 ```
 
 ---
